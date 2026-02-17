@@ -99,7 +99,7 @@ jobs:
       - name: Install R packages
         run: |
           Rscript -e "install.packages(
-            c('DBI', 'RPostgres', 'dplyr', 'dbplyr', 'reticulate'),
+            c('rmarkdown', 'knitr', 'DBI', 'RPostgres', 'dplyr', 'dbplyr', 'reticulate'),
             repos = 'https://cloud.r-project.org'
           )"
 
