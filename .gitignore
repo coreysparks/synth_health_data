@@ -1,3 +1,7 @@
 *.pyc
 *.pyo
 __pycache__/
+
+# Quarto build artifacts
+_site/
+.quarto/

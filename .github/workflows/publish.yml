@@ -1,0 +1,121 @@
+name: Render and Publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Required for the deploy-pages action
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one deployment at a time
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Python ────────────────────────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Record Python path for reticulate
+        run: echo "RETICULATE_PYTHON=$(which python3)" >> $GITHUB_ENV
+
+      - name: Install Python packages
+        run: pip install numpy pandas sqlalchemy psycopg2-binary
+
+      # ── Synthetic data ────────────────────────────────────────────────────
+      - name: Generate synthetic data
+        run: |
+          mkdir -p output
+          python "code/make synth data.py"
+
+      - name: Load data into PostgreSQL
+        run: |
+          python - <<'EOF'
+          import pandas as pd
+          from sqlalchemy import create_engine, text
+
+          engine = create_engine(
+              "postgresql+psycopg2://postgres:postgres@localhost:5433/postgres"
+          )
+
+          with engine.connect() as conn:
+              conn.execute(text("CREATE SCHEMA IF NOT EXISTS synth"))
+              conn.commit()
+
+          tables = [
+              ("person_msis_xwalk",     "output/person_msis_xwalk.csv"),
+              ("true_stays_reference",  "output/true_stays_reference.csv"),
+              ("ip_claim_header_messy", "output/ip_claim_header_messy.csv"),
+              ("ip_claim_line_messy",   "output/ip_claim_line_messy.csv"),
+              ("fact_inpatient_stay",   "output/fact_inpatient_stay.csv"),
+          ]
+
+          for tbl, csv in tables:
+              df = pd.read_csv(csv)
+              df.columns = df.columns.str.lower()
+              df.to_sql(tbl, engine, schema="synth", if_exists="replace", index=False)
+              print(f"Loaded {len(df):,} rows → synth.{tbl}")
+          EOF
+
+      # ── R ─────────────────────────────────────────────────────────────────
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: "release"
+          use-public-rspm: true
+
+      - name: Install R packages
+        run: |
+          Rscript -e "install.packages(
+            c('DBI', 'RPostgres', 'dplyr', 'dbplyr', 'reticulate'),
+            repos = 'https://cloud.r-project.org'
+          )"
+
+      # ── Quarto ────────────────────────────────────────────────────────────
+      - name: Set up Quarto
+        uses: quarto-dev/quarto-actions/setup@v2
+
+      - name: Render site
+        run: quarto render
+
+      # ── Deploy ────────────────────────────────────────────────────────────
+      - name: Upload pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

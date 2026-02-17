@@ -1,0 +1,23 @@
+project:
+  type: website
+  output-dir: _site
+
+website:
+  title: "Synth Health Database"
+  repo-url: https://github.com/coreysparks/synth_health_data
+  repo-actions: [source, issue]
+  navbar:
+    left:
+      - href: connecting_to_synth_db.qmd
+        text: "Connection Guide"
+
+execute:
+  warning: false
+  message: false
+
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    theme: cosmo

@@ -1,15 +1,6 @@
 ---
 title: "Connecting to the Synth Health Database"
 subtitle: "R and Python workflows for the `synth` schema"
-format:
-  html:
-    toc: true
-    toc-depth: 3
-    code-fold: false
-    theme: cosmo
-execute:
-  warning: false
-  message: false
 ---
 
 ```{r}
@@ -17,10 +8,13 @@ execute:
 #| include: false
 
 library(reticulate)
-use_python(
-  "C:/Users/corey/synth_health_data/.conda/python.exe",
-  required = TRUE
-)
+
+# In CI, RETICULATE_PYTHON is set by the workflow; reticulate picks it up
+# automatically. Locally on Windows, fall back to the project conda env.
+local_py <- "C:/Users/corey/synth_health_data/.conda/python.exe"
+if (!nzchar(Sys.getenv("RETICULATE_PYTHON")) && file.exists(local_py)) {
+  use_python(local_py, required = TRUE)
+}
 ```
 
 ## Overview
