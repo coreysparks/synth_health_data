@@ -1,0 +1,497 @@
+---
+title: "Connecting to the Synth Health Database"
+subtitle: "R and Python workflows for the `synth` schema"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    theme: cosmo
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(reticulate)
+use_python(
+  "C:/Users/corey/synth_health_data/.conda/python.exe",
+  required = TRUE
+)
+```
+
+## Overview
+
+This document demonstrates how to connect to the local PostgreSQL database
+containing synthetic health claims data and perform basic exploratory data
+analysis (EDA) on the `synth.fact_inpatient_stay` table.
+
+**Connection details:**
+
+| Parameter | Value      |
+|-----------|------------|
+| Host      | localhost  |
+| Port      | 5433       |
+| Database  | postgres   |
+| Schema    | synth      |
+| User      | postgres   |
+
+The `fact_inpatient_stay` table is an analytic-ready fact table where each row
+represents one resolved inpatient stay, assembled from the underlying messy
+claims data.
+
+---
+
+## Prerequisites
+
+Install the required packages before connecting.
+
+::: {.panel-tabset}
+
+## R
+
+```r
+install.packages(c("DBI", "RPostgres", "dplyr", "dbplyr"))
+```
+
+The key packages:
+
+- **DBI** — database interface abstraction layer
+- **RPostgres** — PostgreSQL driver
+- **dplyr** / **dbplyr** — tidy data manipulation with lazy evaluation against
+  the database
+
+## Python
+
+```bash
+pip install sqlalchemy psycopg2-binary pandas
+```
+
+The key packages:
+
+- **SQLAlchemy** — database abstraction and connection pooling
+- **psycopg2** — PostgreSQL driver (the `-binary` variant bundles its own
+  libpq, so no separate Postgres client install is needed)
+- **pandas** — data manipulation and summary statistics
+
+:::
+
+---
+
+## Establishing a Connection
+
+::: {.panel-tabset}
+
+## R
+
+```{r}
+#| label: r-connect
+
+library(DBI)
+library(RPostgres)
+library(dplyr)
+library(dbplyr)
+
+con <- dbConnect(
+  RPostgres::Postgres(),
+  host     = "localhost",
+  port     = 5433,
+  dbname   = "postgres",
+  user     = "postgres",
+  password = "postgres"
+)
+
+# Confirm the connection is live
+dbGetQuery(con, "SELECT current_database(), current_user, version()")
+```
+
+> **Tip:** Store credentials in environment variables (`.Renviron`) rather than
+> hard-coding them:
+>
+> ```r
+> con <- dbConnect(
+>   RPostgres::Postgres(),
+>   host     = Sys.getenv("PG_HOST", "localhost"),
+>   port     = as.integer(Sys.getenv("PG_PORT", 5433)),
+>   dbname   = Sys.getenv("PG_DB",   "postgres"),
+>   user     = Sys.getenv("PG_USER", "postgres"),
+>   password = Sys.getenv("PG_PASSWORD")
+> )
+> ```
+
+## Python
+
+```{python}
+#| label: py-connect
+
+from sqlalchemy import create_engine, text
+import pandas as pd
+
+engine = create_engine(
+    "postgresql+psycopg2://postgres:postgres@localhost:5433/postgres"
+)
+
+# Confirm the connection is live
+with engine.connect() as conn:
+    result = conn.execute(
+        text("SELECT current_database(), current_user, version()")
+    )
+    print(result.fetchone())
+```
+
+> **Tip:** Store credentials in environment variables rather than the
+> connection string:
+>
+> ```python
+> import os
+> from sqlalchemy import create_engine
+>
+> engine = create_engine(
+>     f"postgresql+psycopg2://{os.environ['PG_USER']}:"
+>     f"{os.environ['PG_PASSWORD']}@"
+>     f"{os.environ.get('PG_HOST', 'localhost')}:"
+>     f"{os.environ.get('PG_PORT', 5433)}/"
+>     f"{os.environ.get('PG_DB', 'postgres')}"
+> )
+> ```
+
+:::
+
+---
+
+## Exploring the Schema
+
+### Tables in the `synth` schema
+
+::: {.panel-tabset}
+
+## R
+
+```{r}
+#| label: r-list-tables
+
+dbGetQuery(con, "
+  SELECT table_name, table_type
+  FROM   information_schema.tables
+  WHERE  table_schema = 'synth'
+  ORDER  BY table_name
+")
+```
+
+## Python
+
+```{python}
+#| label: py-list-tables
+
+with engine.connect() as conn:
+    tables = pd.read_sql("""
+        SELECT table_name, table_type
+        FROM   information_schema.tables
+        WHERE  table_schema = 'synth'
+        ORDER  BY table_name
+    """, conn)
+
+print(tables.to_string(index=False))
+```
+
+:::
+
+### Column definitions for `fact_inpatient_stay`
+
+::: {.panel-tabset}
+
+## R
+
+```{r}
+#| label: r-columns
+
+dbGetQuery(con, "
+  SELECT column_name,
+         data_type,
+         is_nullable
+  FROM   information_schema.columns
+  WHERE  table_schema = 'synth'
+    AND  table_name   = 'fact_inpatient_stay'
+  ORDER  BY ordinal_position
+")
+```
+
+## Python
+
+```{python}
+#| label: py-columns
+
+with engine.connect() as conn:
+    cols = pd.read_sql("""
+        SELECT column_name,
+               data_type,
+               is_nullable
+        FROM   information_schema.columns
+        WHERE  table_schema = 'synth'
+          AND  table_name   = 'fact_inpatient_stay'
+        ORDER  BY ordinal_position
+    """, conn)
+
+print(cols.to_string(index=False))
+```
+
+:::
+
+---
+
+## Basic EDA: `fact_inpatient_stay`
+
+### Row count and shape
+
+::: {.panel-tabset}
+
+## R
+
+```{r}
+#| label: r-row-count
+
+# Total rows
+dbGetQuery(con, "SELECT COUNT(*) AS n_rows FROM synth.fact_inpatient_stay")
+```
+
+## Python
+
+```{python}
+#| label: py-row-count
+
+with engine.connect() as conn:
+    n = pd.read_sql(
+        "SELECT COUNT(*) AS n_rows FROM synth.fact_inpatient_stay", conn
+    )
+print(n)
+```
+
+:::
+
+### Sample rows
+
+::: {.panel-tabset}
+
+## R
+
+```{r}
+#| label: r-head
+
+dbGetQuery(con, "SELECT * FROM synth.fact_inpatient_stay LIMIT 5")
+```
+
+## Python
+
+```{python}
+#| label: py-head
+
+with engine.connect() as conn:
+    sample = pd.read_sql(
+        "SELECT * FROM synth.fact_inpatient_stay LIMIT 5", conn
+    )
+print(sample.to_string(index=False))
+```
+
+:::
+
+### Summary statistics for numeric columns
+
+::: {.panel-tabset}
+
+## R
+
+```{r}
+#| label: r-summary
+
+dbGetQuery(con, "
+  SELECT
+    ROUND(MIN(length_of_stay)::numeric, 1)  AS los_min,
+    ROUND(AVG(length_of_stay)::numeric, 1)  AS los_mean,
+    ROUND(MAX(length_of_stay)::numeric, 1)  AS los_max,
+    ROUND(MIN(icu_days)::numeric, 1)        AS icu_min,
+    ROUND(AVG(icu_days)::numeric, 1)        AS icu_mean,
+    ROUND(MAX(icu_days)::numeric, 1)        AS icu_max,
+    ROUND(MIN(total_paid)::numeric, 2)      AS paid_min,
+    ROUND(AVG(total_paid)::numeric, 2)      AS paid_mean,
+    ROUND(MAX(total_paid)::numeric, 2)      AS paid_max,
+    ROUND(MIN(total_allowed)::numeric, 2)   AS allowed_min,
+    ROUND(AVG(total_allowed)::numeric, 2)   AS allowed_mean,
+    ROUND(MAX(total_allowed)::numeric, 2)   AS allowed_max
+  FROM synth.fact_inpatient_stay
+")
+```
+
+You can also pull a sample to local memory and use R's native `summary()`:
+
+```{r}
+#| label: r-summary-local
+
+fact <- con |>
+  tbl(in_schema("synth", "fact_inpatient_stay")) |>
+  select(length_of_stay, icu_days, total_paid, total_allowed,
+         n_claims, any_denied) |>
+  collect()
+
+summary(fact)
+```
+
+## Python
+
+```{python}
+#| label: py-summary
+
+with engine.connect() as conn:
+    fact = pd.read_sql(
+        """
+        SELECT length_of_stay, icu_days, total_paid, total_allowed,
+               n_claims, any_denied
+        FROM   synth.fact_inpatient_stay
+        """,
+        conn
+    )
+
+print(fact.describe().round(2).to_string())
+```
+
+:::
+
+### Missing values
+
+::: {.panel-tabset}
+
+## R
+
+```{r}
+#| label: r-nulls
+
+dbGetQuery(con, "
+  SELECT
+    COUNT(*) FILTER (WHERE drg_cd    IS NULL) AS drg_cd_null,
+    COUNT(*) FILTER (WHERE dx_cd_1   IS NULL) AS dx_cd_1_null,
+    COUNT(*) FILTER (WHERE total_paid IS NULL) AS total_paid_null,
+    COUNT(*) FILTER (WHERE total_allowed IS NULL) AS total_allowed_null,
+    COUNT(*)                                  AS n_total
+  FROM synth.fact_inpatient_stay
+")
+```
+
+## Python
+
+```{python}
+#| label: py-nulls
+
+with engine.connect() as conn:
+    nulls = pd.read_sql("""
+        SELECT
+          COUNT(*) FILTER (WHERE drg_cd       IS NULL) AS drg_cd_null,
+          COUNT(*) FILTER (WHERE dx_cd_1      IS NULL) AS dx_cd_1_null,
+          COUNT(*) FILTER (WHERE total_paid   IS NULL) AS total_paid_null,
+          COUNT(*) FILTER (WHERE total_allowed IS NULL) AS total_allowed_null,
+          COUNT(*)                                     AS n_total
+        FROM synth.fact_inpatient_stay
+    """, conn)
+
+print(nulls.to_string(index=False))
+```
+
+:::
+
+### Stays by admission year and quarter
+
+::: {.panel-tabset}
+
+## R
+
+```{r}
+#| label: r-year-qtr
+
+con |>
+  tbl(in_schema("synth", "fact_inpatient_stay")) |>
+  count(admit_year, admit_quarter) |>
+  arrange(admit_year, admit_quarter) |>
+  collect()
+```
+
+## Python
+
+```{python}
+#| label: py-year-qtr
+
+with engine.connect() as conn:
+    trend = pd.read_sql("""
+        SELECT admit_year,
+               admit_quarter,
+               COUNT(*) AS n_stays
+        FROM   synth.fact_inpatient_stay
+        GROUP  BY admit_year, admit_quarter
+        ORDER  BY admit_year, admit_quarter
+    """, conn)
+
+print(trend.to_string(index=False))
+```
+
+:::
+
+### Denial rate
+
+::: {.panel-tabset}
+
+## R
+
+```{r}
+#| label: r-denial
+
+dbGetQuery(con, "
+  SELECT
+    SUM(any_denied)                                    AS n_any_denied,
+    COUNT(*)                                           AS n_total,
+    ROUND(AVG(any_denied::numeric) * 100, 1) || '%'   AS denial_rate
+  FROM synth.fact_inpatient_stay
+")
+```
+
+## Python
+
+```{python}
+#| label: py-denial
+
+with engine.connect() as conn:
+    denial = pd.read_sql("""
+        SELECT
+          SUM(any_denied)                          AS n_any_denied,
+          COUNT(*)                                 AS n_total,
+          ROUND(AVG(any_denied::numeric) * 100, 1) AS denial_rate_pct
+        FROM synth.fact_inpatient_stay
+    """, conn)
+
+print(denial.to_string(index=False))
+```
+
+:::
+
+---
+
+## Closing the Connection
+
+::: {.panel-tabset}
+
+## R
+
+```{r}
+#| label: r-disconnect
+
+DBI::dbDisconnect(con)
+```
+
+## Python
+
+```{python}
+#| label: py-disconnect
+
+engine.dispose()
+```
+
+:::
