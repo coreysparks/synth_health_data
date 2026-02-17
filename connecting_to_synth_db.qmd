@@ -7,13 +7,11 @@ subtitle: "R and Python workflows for the `synth` schema"
 #| label: setup
 #| include: false
 
-library(reticulate)
-
-# In CI, RETICULATE_PYTHON is set by the workflow; reticulate picks it up
-# automatically. Locally on Windows, fall back to the project conda env.
+# Locally on Windows, tell reticulate where Python is.
+# In CI, RETICULATE_PYTHON env var is set by the workflow.
 local_py <- "C:/Users/corey/synth_health_data/.conda/python.exe"
 if (!nzchar(Sys.getenv("RETICULATE_PYTHON")) && file.exists(local_py)) {
-  use_python(local_py, required = TRUE)
+  reticulate::use_python(local_py, required = TRUE)
 }
 ```
 
