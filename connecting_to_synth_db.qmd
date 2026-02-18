@@ -15,13 +15,55 @@ if (!nzchar(Sys.getenv("RETICULATE_PYTHON")) && file.exists(local_py)) {
 }
 ```
 
-## Overview
+## Why Connect Directly to the Database?
 
-This document demonstrates how to connect to the local PostgreSQL database
-containing synthetic health claims data and perform basic exploratory data
-analysis (EDA) on the `synth.fact_inpatient_stay` table.
+Health data analysis has traditionally followed a fragile pattern: an analyst
+requests a data extract, someone runs a report or export, a CSV lands in an
+email or shared folder, and the analyst opens it in a spreadsheet or statistical
+software. This workflow is easy to describe and hard to defend. The extract is
+a frozen snapshot with no provenance. Every subsequent analysis starts by
+repeating the extract, often with subtly different filters or date ranges.
+Reproducibility is an afterthought, and the gap between what is in the database
+and what is on the analyst's desk grows with every revision.
 
-**Connection details:**
+Connecting directly to the database eliminates this gap. Instead of extracting
+data and then analyzing it, the analyst works against the live source of truth.
+Several important properties follow from this:
+
+**Computation stays close to the data.** Databases are purpose-built for
+aggregating and filtering large datasets. A `COUNT`, `GROUP BY`, or window
+function that would strain a laptop's memory runs in milliseconds on a properly
+indexed table. Direct connections let you push that work to where it belongs —
+in the database — and only pull the summary you actually need into your
+analysis environment.
+
+**The workflow is reproducible by construction.** A script that connects to a
+named database and runs named queries is self-documenting. Anyone with the same
+credentials can re-run the exact analysis against the exact same data. There is
+no intermediate file to lose, misplace, or accidentally overwrite.
+
+**Access control and auditing are preserved.** Database connections respect
+the permission model set by database administrators. Row-level security,
+schema-level grants, and audit logs all remain intact. Exporting to a flat file
+bypasses all of this.
+
+**The interface is consistent across languages.** Whether you prefer R or
+Python, the mental model is the same: establish a connection, send SQL, receive
+a result. The packages shown in this document (`DBI`/`RPostgres` in R,
+`SQLAlchemy`/`psycopg2` in Python) both provide a thin, idiomatic layer over
+standard PostgreSQL wire protocol. You can switch between languages without
+changing a line of SQL.
+
+This document demonstrates this workflow against the `synth` schema — a
+PostgreSQL database of synthetic Medicaid inpatient claims. The EDA steps shown
+here are the same ones you would apply to any administrative claims database:
+understand the schema, verify scale and shape, check data quality, and
+characterize the key clinical and financial dimensions before writing a single
+line of analysis code.
+
+---
+
+## Connection Details
 
 | Parameter | Value      |
 |-----------|------------|
@@ -33,7 +75,8 @@ analysis (EDA) on the `synth.fact_inpatient_stay` table.
 
 The `fact_inpatient_stay` table is an analytic-ready fact table where each row
 represents one resolved inpatient stay, assembled from the underlying messy
-claims data.
+claims data. The remaining tables in the schema contain the raw messy claims,
+deduplicated canonical versions, and reference tables used to build it.
 
 ---
 
@@ -51,10 +94,16 @@ install.packages(c("DBI", "RPostgres", "dplyr", "dbplyr"))
 
 The key packages:
 
-- **DBI** — database interface abstraction layer
-- **RPostgres** — PostgreSQL driver
-- **dplyr** / **dbplyr** — tidy data manipulation with lazy evaluation against
-  the database
+- **DBI** — a unified database interface that decouples your code from any
+  specific database engine. You write the same `dbConnect()`, `dbGetQuery()`,
+  and `dbDisconnect()` calls regardless of whether the back end is PostgreSQL,
+  SQLite, or something else.
+- **RPostgres** — the PostgreSQL-specific driver that DBI calls under the hood.
+  It handles the network protocol, type conversion, and authentication.
+- **dplyr** / **dbplyr** — together these let you write tidy `filter()`,
+  `select()`, and `summarise()` calls that are automatically translated into
+  SQL and executed in the database. The result is only pulled into R when you
+  call `collect()`.
 
 ## Python
 
@@ -64,16 +113,27 @@ pip install sqlalchemy psycopg2-binary pandas
 
 The key packages:
 
-- **SQLAlchemy** — database abstraction and connection pooling
-- **psycopg2** — PostgreSQL driver (the `-binary` variant bundles its own
-  libpq, so no separate Postgres client install is needed)
-- **pandas** — data manipulation and summary statistics
+- **SQLAlchemy** — a database abstraction toolkit that manages connections,
+  connection pooling, and dialect differences across database engines. Using an
+  `engine` object rather than a raw connection makes your code portable and
+  handles reconnection automatically.
+- **psycopg2** — the PostgreSQL driver (the `-binary` variant bundles its own
+  `libpq`, so no separate Postgres client install is needed on most systems).
+- **pandas** — `pd.read_sql()` accepts a SQL string and an open connection and
+  returns a DataFrame. It handles type inference, date parsing, and `NULL`-to-
+  `NaN` conversion automatically.
 
 :::
 
 ---
 
 ## Establishing a Connection
+
+The connection object (R) or engine (Python) is the entry point for everything
+that follows. Both accept the same five parameters: host, port, database name,
+username, and password. A confirmation query that returns the server version is
+a good sanity check before doing any real work — it verifies that the
+credentials are correct and the network path is open.
 
 ::: {.panel-tabset}
 
@@ -101,7 +161,8 @@ dbGetQuery(con, "SELECT current_database(), current_user, version()")
 ```
 
 > **Tip:** Store credentials in environment variables (`.Renviron`) rather than
-> hard-coding them:
+> hard-coding them. Hard-coded passwords end up in version control and in shared
+> documents. Environment variables stay on the machine that needs them.
 >
 > ```r
 > con <- dbConnect(
@@ -135,7 +196,9 @@ with engine.connect() as conn:
 ```
 
 > **Tip:** Store credentials in environment variables rather than the
-> connection string:
+> connection string. The `with engine.connect()` pattern also ensures the
+> connection is returned to the pool when the block exits, even if an exception
+> is raised.
 >
 > ```python
 > import os
@@ -156,7 +219,20 @@ with engine.connect() as conn:
 
 ## Exploring the Schema
 
+Before touching any individual table, it is worth understanding what the schema
+contains. PostgreSQL's `information_schema` views expose the catalog of tables,
+columns, data types, and constraints without requiring any knowledge of the
+underlying data. This is the database equivalent of reading a codebook — it
+tells you what exists and how it is typed before you write a single analytical
+query.
+
 ### Tables in the `synth` schema
+
+The `information_schema.tables` view lists every table and view visible to the
+current user. Checking this first confirms you are connected to the right
+schema and have the access you expect. In a production environment this step
+also surfaces any new tables added since the last time you worked with the
+database.
 
 ::: {.panel-tabset}
 
@@ -192,6 +268,14 @@ print(tables.to_string(index=False))
 :::
 
 ### Column definitions for `fact_inpatient_stay`
+
+Reviewing column names, data types, and nullability before writing any queries
+prevents a class of common errors: joining on a text column you assumed was
+numeric, filtering a date stored as `character varying`, or expecting a NOT NULL
+guarantee that does not exist. In claims data this step is especially important
+because the same concept (a date, an amount, a code) can be stored as very
+different types depending on the source system and the ETL that produced the
+table.
 
 ::: {.panel-tabset}
 
@@ -236,7 +320,21 @@ print(cols.to_string(index=False))
 
 ## Basic EDA: `fact_inpatient_stay`
 
+Exploratory data analysis on a claims table follows a consistent sequence: start
+with scale (how many rows?), then shape (what do the values look like?), then
+quality (what is missing or anomalous?), and finally domain-specific dimensions
+(time, geography, clinical codes, financials). Each step narrows the scope of
+what you need to investigate further.
+
 ### Row count and shape
+
+The very first thing to establish is the size of the table. This sets
+expectations for query runtime, memory requirements if you plan to pull data
+locally, and whether the row count matches what you were told to expect. A table
+with 50 rows when you expected 50,000 is a sign of a failed load; a table with
+5 million rows when you expected 500,000 means your analysis plan needs to
+account for scale. Neither discovery should be made for the first time in the
+middle of a slow `collect()`.
 
 ::: {.panel-tabset}
 
@@ -245,7 +343,6 @@ print(cols.to_string(index=False))
 ```{r}
 #| label: r-row-count
 
-# Total rows
 dbGetQuery(con, "SELECT COUNT(*) AS n_rows FROM synth.fact_inpatient_stay")
 ```
 
@@ -264,6 +361,14 @@ print(n)
 :::
 
 ### Sample rows
+
+Looking at a small number of raw rows is the fastest way to spot problems that
+summary statistics would hide: truncated identifiers, unexpected date formats,
+codes that are all the same value (suggesting a default was applied everywhere),
+or amounts with implausible precision. In claims data it is common to find
+admission dates that are later than discharge dates, zero-dollar allowed amounts
+on non-denied claims, or stay IDs that do not follow the expected pattern. A
+5-row sample will not catch everything, but it will catch the obvious ones.
 
 ::: {.panel-tabset}
 
@@ -291,6 +396,16 @@ print(sample.to_string(index=False))
 
 ### Summary statistics for numeric columns
 
+Summary statistics computed in the database are far more efficient than pulling
+all rows and computing them locally — the database returns a single row no
+matter how large the table is. For inpatient claims, the key numeric fields are
+length of stay, ICU utilization, and financial amounts (paid vs. allowed).
+The gap between `total_allowed` and `total_paid` reflects the denied portion of
+claims and is a primary driver of provider payment variability. The spread of
+`length_of_stay` and `icu_days` captures clinical intensity. Implausibly large
+maximums (e.g., a stay of 3,000 days) or negative values for amounts are
+immediate data quality flags.
+
 ::: {.panel-tabset}
 
 ## R
@@ -316,7 +431,10 @@ dbGetQuery(con, "
 ")
 ```
 
-You can also pull a sample to local memory and use R's native `summary()`:
+When you do need full distributional detail, `dbplyr` lets you select only the
+columns you need and pull them into local memory with `collect()`. This keeps
+the transferred data minimal while giving you access to R's full suite of
+summary and visualization tools.
 
 ```{r}
 #| label: r-summary-local
@@ -352,6 +470,16 @@ print(fact.describe().round(2).to_string())
 
 ### Missing values
 
+In administrative claims, missingness is rarely random. A null `drg_cd` often
+indicates a claim type that is not subject to DRG grouping (e.g., a psychiatric
+or rehabilitation stay) or a grouper failure. A null `dx_cd_1` may reflect a
+data submission gap from a specific provider or state. Financial nulls on
+`total_paid` or `total_allowed` can indicate the stay was fully denied or that
+payment information was not transmitted with the claim. Understanding which
+fields are missing — and how many — is necessary before deciding how to handle
+them in analysis. Computing missingness in the database avoids the cost of
+pulling every row locally to run `.isna()` or `is.na()`.
+
 ::: {.panel-tabset}
 
 ## R
@@ -361,11 +489,11 @@ print(fact.describe().round(2).to_string())
 
 dbGetQuery(con, "
   SELECT
-    COUNT(*) FILTER (WHERE drg_cd    IS NULL) AS drg_cd_null,
-    COUNT(*) FILTER (WHERE dx_cd_1   IS NULL) AS dx_cd_1_null,
-    COUNT(*) FILTER (WHERE total_paid IS NULL) AS total_paid_null,
+    COUNT(*) FILTER (WHERE drg_cd       IS NULL) AS drg_cd_null,
+    COUNT(*) FILTER (WHERE dx_cd_1      IS NULL) AS dx_cd_1_null,
+    COUNT(*) FILTER (WHERE total_paid   IS NULL) AS total_paid_null,
     COUNT(*) FILTER (WHERE total_allowed IS NULL) AS total_allowed_null,
-    COUNT(*)                                  AS n_total
+    COUNT(*)                                     AS n_total
   FROM synth.fact_inpatient_stay
 ")
 ```
@@ -392,6 +520,16 @@ print(nulls.to_string(index=False))
 :::
 
 ### Stays by admission year and quarter
+
+Temporal distribution is one of the first things to examine in longitudinal
+claims data. You want to confirm that volume is stable and consistent with
+expectations across the observation window. Large drops in a particular quarter
+can signal incomplete data submission — states or providers that were late in
+submitting claims for that period. Unexpected spikes may indicate a system
+change that altered how stays were constructed. In Medicaid data specifically,
+enrollment fluctuations (eligibility changes, policy transitions) can drive
+genuine quarter-over-quarter volume changes that are worth distinguishing from
+data artifacts.
 
 ::: {.panel-tabset}
 
@@ -427,7 +565,62 @@ print(trend.to_string(index=False))
 
 :::
 
+### Stays by state
+
+Even in a single-state dataset it is important to verify that the geographic
+distribution matches expectations. In multi-state Medicaid data, volume by state
+is one of the first quality checks performed — states with very low counts
+relative to their enrolled population may have submission problems, while states
+with inflated counts may have duplicate claim issues that survived the
+deduplication step. The `state_cd` and `submtg_state_cd` fields in this schema
+represent the state where the beneficiary was enrolled and the state that
+submitted the claim, respectively. In most cases these match, but discrepancies
+can surface cross-state coverage situations.
+
+::: {.panel-tabset}
+
+## R
+
+```{r}
+#| label: r-state
+
+con |>
+  tbl(in_schema("synth", "fact_inpatient_stay")) |>
+  count(state_cd, sort = TRUE) |>
+  collect()
+```
+
+## Python
+
+```{python}
+#| label: py-state
+
+with engine.connect() as conn:
+    by_state = pd.read_sql("""
+        SELECT state_cd,
+               COUNT(*) AS n_stays
+        FROM   synth.fact_inpatient_stay
+        GROUP  BY state_cd
+        ORDER  BY n_stays DESC
+    """, conn)
+
+print(by_state.to_string(index=False))
+```
+
+:::
+
 ### Denial rate
+
+The `any_denied` flag indicates whether at least one claim contributing to the
+stay was denied. Denial rates are a key utilization management metric: they
+affect provider payment, they can signal where prior authorization requirements
+are concentrated, and they are often stratified by DRG or diagnosis in
+downstream analysis. A denial rate of near zero suggests either a clean payer-
+provider relationship or that denial information was not captured in the source
+data. A very high rate (above 20–25% in most Medicaid contexts) may indicate
+data quality problems with the denied claim flag itself. The rate here reflects
+the simulation parameters and should be consistent with the ~5% denied-claim
+probability used to generate the data.
 
 ::: {.panel-tabset}
 
@@ -467,6 +660,12 @@ print(denial.to_string(index=False))
 ---
 
 ## Closing the Connection
+
+Always close the connection explicitly when you are done. In R, an open `con`
+object holds a network socket; in Python, `engine.dispose()` closes the
+underlying connection pool. Leaving connections open is not catastrophic in a
+single-user local environment, but in shared or production settings it consumes
+database resources and can hit connection limits.
 
 ::: {.panel-tabset}
 
