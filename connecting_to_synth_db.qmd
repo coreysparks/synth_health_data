@@ -1,6 +1,20 @@
 ---
 title: "Connecting to the Synth Health Database"
 subtitle: "R and Python workflows for the `synth` schema"
+author: "Corey Sparks, Ph.D."
+website: "https://www.linkedin.com/in/corey-sparks-ph-d/"
+toc: true
+toc_depth: 3
+toc_float:
+  collapsed: no
+  smooth_scroll: yes
+toc_location: left
+number-sections: true
+format: 
+  html:
+    embed-resources: true
+    df-print: paged
+
 ---
 
 ```{r}
